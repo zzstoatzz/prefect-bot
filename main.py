@@ -105,6 +105,10 @@ class Knapsack(BaseModel):
 
             run_command(["ls", "-l", "scratchpad"]) # list files in scratchpad directory
 
+            run_command(["prefect", "version"]) # check Prefect version
+
+            run_command(["prefect", "flow-run", "ls"]) # list all flow runs
+
         Returns:
             str: The output of the executed command.
         """

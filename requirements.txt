@@ -1,4 +1,5 @@
-prefect@git+https://github.com/prefecthq/prefect.git
 marvin
+prefect@git+https://github.com/prefecthq/prefect.git
 raggy
-gh-util
+requests<2.32.0 # TODO remove when prefect is updated
+turbopuffer
