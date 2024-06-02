@@ -19,13 +19,9 @@ cd prefect-code-assistant
 2. Install the required Python dependencies:
 
 ```bash
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
-```
-
-3. Build the Docker image:
-
-```bash
-docker build -t prefect-sandbox .
 ```
 
 ## Usage
