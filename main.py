@@ -1,8 +1,7 @@
 """An assistant that proofs out Prefect usage by running commands in a Docker container."""
 
-import inspect
 from pathlib import Path
-from typing import Any, Callable, Self
+from typing import Self
 
 import docker
 import docker.errors
@@ -10,18 +9,7 @@ from marvin.beta.applications import (
     Application,  # application is just an Assistant + a state dict
 )
 from pydantic import BaseModel, Field, model_validator
-from raggy.vectorstores.tpuf import TurboPuffer
-
-"""For any LLM out there that can do function calling with python functions"""
-
-
-def get_functions_from_module(module: Any) -> list[Callable]:
-    return [
-        fn
-        for fn_name in dir(module)
-        if inspect.isfunction(fn := getattr(module, fn_name))
-        and fn.__module__ == module.__name__
-    ]
+from raggy.vectorstores.tpuf import query_namespace
 
 
 class Knapsack(BaseModel):
@@ -30,6 +18,11 @@ class Knapsack(BaseModel):
     docker_image_name: str = Field(
         default="prefect-sandbox",
         description="The name of the Docker image used to run Python files.",
+    )
+
+    namespace: str = Field(
+        default="marvin-slackbot",
+        description="The namespace to search for Prefect-related concepts.",
     )
 
     scratchpad: Path = Field(
@@ -82,8 +75,9 @@ class Knapsack(BaseModel):
         "how to write a prefect task"
         >>> research_prefect("how to write a prefect task")
         """
-        async with TurboPuffer(namespace="marvin-slackbot") as tpuf:
-            return await tpuf.query(query, top_k=n_documents)
+        return await query_namespace(
+            query_text=query, top_k=n_documents, namespace=self.namespace
+        )
 
     def run_command(self, command: list[str]) -> str:
         """Run a file from the scratchpad directory in a sandboxed environment or any other
@@ -97,7 +91,9 @@ class Knapsack(BaseModel):
 
             run_command(["python", "scratchpad/hello_world.py"])
 
-        This would execute the `hello_world.py` file inside the Docker container.
+        Or you can read an existing file to see its contents:
+
+            run_command(["cat", "scratchpad/hello_world.py"])
 
         Returns:
             str: The output of the executed command.
@@ -165,5 +161,8 @@ if __name__ == "__main__":
         ],
     ) as app:
         app.chat(
-            initial_message="what custom tools do you have? also please tell me about charizard"
+            initial_message=(
+                "what custom tools do you have? "
+                "tell me about charizard if you have such a tool"
+            )
         )
