@@ -1,179 +1,120 @@
+# /// script
+# dependencies = ["marvin", "prefect", "raggy[tpuf]"]
+# ///
+
 """An assistant that proofs out Prefect usage by running commands in a Docker container."""
 
-from pathlib import Path
-from typing import Self
+import asyncio
+import subprocess
 
-import docker
-import docker.errors
-from marvin.beta.applications import (
-    Application,  # application is just an Assistant + a state dict
-)
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
-from raggy.vectorstores.tpuf import query_namespace
+import marvin
+from marvin.beta.applications import Application
+from pydantic import BaseModel, Field
+from raggy.vectorstores.tpuf import TurboPuffer
+
+from mounted_filesystem import MountedDockerSandbox
+
+CLASSIFY_MODEL = EXTRACT_MODEL = "gpt-4o-2024-11-20"
 
 
-class Knapsack(BaseModel):
-    """Curated state useful for performing prefect-related tasks.
+class ExecutiveSummary(BaseModel):
+    title: str = Field(description="a few word summary of the input")
+    main_points: list[str] = Field(default_factory=list, description="key takeaways")
+
+
+class Knapsack(MountedDockerSandbox):
+    """Curated state useful for performing topic-related tasks.
 
     Includes tool implementations for:
-    - reading/writing new Python files
-    - researching Prefect concepts
-    - running scripts/commands in a sandboxed Docker environment
+    - researching topics and curating notes for future reference
+    - running commands/scripts/containers/file IO in a sandboxed Docker environment # via MountedDockerSandbox
     """
 
-    scratchpad: Path = Field(
-        default=Path.cwd() / "scratchpad",
-        description="A directory to store custom Python functions.",
-    )
-
     notes: list[str] = Field(
-        default_factory=lambda: [
-            "with Flow(...) as flow syntax is obsolete, use @flow to decorate a function instead.",
-        ],
+        default_factory=list,
         description="A place to keep useful nuggets of information based on past errors.",
         max_length=10,
     )
 
-    _docker_image_name: str = PrivateAttr(default="prefect-sandbox")
-
-    _namespace: str = PrivateAttr(
-        default="marvin-slackbot",
+    topics: list[str] = Field(
+        default_factory=list,
+        description="Topics to read up on / curate information for.",
     )
 
-    def create_or_update_scripts(self, filename: str, body: str) -> None:
-        """Write a new Python file to the scratchpad directory. May be
-        used to rewrite existing files.
+    vector_namespace: str = Field(default="marvin-slackbot")
 
-        Example:
-          User: please write a function that returns the date n days ago
-
-            >>> write_new_tool(
-            ...     "get_current_date_n_days_ago.py",
-            ...     \"""
-            ...     import sys
-            ...     from datetime import datetime, timedelta
-            ...
-            ...     if __name__ == "__main__":
-            ...         try:
-            ...             n = int(sys.argv[1])
-            ...             print(datetime.now().date() - timedelta(days=n))
-            ...         except ValueError:
-            ...             print("Please provide an integer as an argument.")
-            ...             sys.exit(1)
-            ...     \"""
-            ... )
-        """
-        try:
-            (self.scratchpad / f"{filename}").write_text(body)
-        except Exception as e:
-            return f"Failed to write new helper: {e}"
-
-    def delete_script(self, filename: str) -> None:
-        """Delete a Python file from the scratchpad directory.
-
-        Example:
-        "delete the file named 'get_current_date_n_days_ago.py'"
-        >>> delete_script("get_current_date_n_days_ago.py")
-        """
-        try:
-            (self.scratchpad / f"{filename}").unlink()
-        except Exception as e:
-            return f"Failed to delete helper: {e}"
-
-    async def research_prefect(self, query: str, n_documents: int = 3) -> list[str]:
+    async def research_a_topic(self, query: str, n_documents: int = 3) -> str:
         """Research a prefect-related concept. MUST be used before writing any code.
 
         Example:
         "how to write a prefect task"
-        >>> research_prefect("how to write a prefect task")
+        >>> research_a_topic("how to write a prefect task")
         """
-        return await query_namespace(
-            query_text=query, top_k=n_documents, namespace=self._namespace
+        with TurboPuffer(namespace=self.vector_namespace) as tpuf:
+            vector_result = tpuf.query(
+                text=query,
+                top_k=n_documents,
+            )
+            documents = [
+                str(row.attributes["text"])
+                for row in (vector_result.data or [])
+                if (row and row.attributes and row.attributes["text"])
+            ]
+
+        most_relevant_excerpt, summaries = await asyncio.gather(  # type: ignore
+            marvin.classify_async(
+                data=f"here are the {self.notes=!r}\n\n and the query: {query}",
+                labels=documents,
+                model_kwargs={"model": CLASSIFY_MODEL},
+            ),
+            marvin.extract_async(
+                data="\n".join(documents),
+                model_kwargs={"model": EXTRACT_MODEL},
+                target=ExecutiveSummary,
+                instructions=f"given the following {self.notes=!r}\n\nsummarize documents related to: {query}",
+            ),
         )
 
-    def run_command(self, command: list[str]) -> str:
-        """Run any linux command (including Python scripts) in a sandboxed
-        docker container with Prefect installed. All paths are RELATIVE to repo root.
-        NEVER use absolute paths.
-
-        Examples:
-            run_command(["python", "scratchpad/hello_world.py"]) # run existing py file
-
-            run_command(["cat", "scratchpad/hello_world.py"]) # view contents of existing file
-
-            run_command(["ls", "-l"]) # list files in current directory
-
-            run_command(["ls", "-l", "scratchpad"]) # list files in scratchpad directory
-
-            run_command(["prefect", "version"]) # check Prefect version
-
-            run_command(["prefect", "flow-run", "ls"]) # list all flow runs
-
-        Returns:
-            str: The output of the executed command.
-        """
-        client = docker.from_env()
-        try:
-            result = client.containers.run(
-                self._docker_image_name,
-                command,
-                volumes={
-                    str(self.scratchpad.absolute()): {
-                        "bind": "/app/scratchpad",
-                        "mode": "ro",
-                    }
-                },
-                remove=True,
-            )
-            return result.decode("utf-8")
-        except Exception as e:
-            return f"Failed to run Python file: {e}"
-
-    def list_scripts(self) -> list[str]:
-        """List the names of all custom Python files in the scratchpad directory."""
-        return [file.name for file in self.scratchpad.rglob("*.py")]
-
-    @model_validator(mode="after")
-    def ensure_scratchpad_exists(self) -> Self:
-        """Ensure a directory named `path` exists."""
-        if not self.scratchpad.exists():
-            self.scratchpad.parent.mkdir(parents=True, exist_ok=True)
-            self.scratchpad.mkdir()
-        return self
-
-    @model_validator(mode="after")
-    def ensure_docker_image_ready(self) -> Self:
-        """Ensure the Docker image 'prefect-sandbox' exists. If not, build it from the Dockerfile."""
-        client = docker.from_env()
-        try:
-            client.images.get(self._docker_image_name)
-        except docker.errors.ImageNotFound:
-            print(
-                f"Docker image {self._docker_image_name!r} not found. Building from Dockerfile..."
-            )
-            client.images.build(path=".", tag="prefect-sandbox")
-        return self
+        return f"Relevant excerpt: {most_relevant_excerpt}\n\nSummaries: {summaries}"
 
 
 if __name__ == "__main__":
-    my_bag = Knapsack()
-    with Application(
-        name="Prefect code assistant",
-        instructions=(
-            "Act as a Prefect code copilot in a sandboxed environment. "
-            "We are using a brand new version of Prefect so you MUST rely on `research_prefect` "
-            "in order to know valid Prefect syntax and imports. Never write code without research."
-            "List, write and use custom Python functions to help you along the way. "
-            "If you repeatedly fail with the same error, stop and await further instructions. "
-            "Remember to codify lessons learned in the `notes` attribute when profound."
-        ),
-        state=my_bag,
-        tools=[
-            my_bag.research_prefect,
-            my_bag.create_or_update_scripts,
-            my_bag.delete_script,
-            my_bag.run_command,
-            my_bag.list_scripts,
+    knapsack = Knapsack(  # knapsack is a pydantic model with a few extra methods
+        notes=[
+            "with Flow(...) as flow syntax is obsolete, use @flow to decorate a function instead.",
+            "Agents are deprecated in favor of workers, which subscribe to work pools.",
+            "One should always wrap an entrypoint in a `if __name__ == '__main__':` block.",
+            "To persist data in the db, use `prefect server database reset -y` to create a new database.",
         ],
-    ) as app:
-        app.chat(initial_message="what custom tools are available?")
+        topics=["Prefect deployment"],
+    )
+    with (
+        Application(  # application is just an Assistant + a state (BaseModel/JSONable object)
+            model="gpt-4o-2024-11-20",
+            name="Prefect Code assistant",
+            instructions=(
+                "You are modern (3.12+) Prefect code copilot in a sandboxed (docker) environment. "
+                "We are using a brand new version of Prefect so you MUST rely on `research_a_topic` "
+                "in order to know valid Prefect syntax and imports. Never write code without research. "
+                "Review https://docs.prefect.io/v3/deploy/run-flows-in-local-processes and "
+                "https://docs.prefect.io/v3/resources/upgrade-agents-to-workers and take notes, but generally "
+                "flows compose tasks and are each just decorated functions and you run them like normal functions, "
+                "you don't need to actually create a deployment to run it and see stdout/stderr. "
+                "Write, iterate, and test your code in the scratchpad directory using the provided tools. "
+                "We may use any and all data engineering tools available to us: docker, k8s, etc."
+                "If you repeatedly fail with the same error, stop and await further instructions. "
+                "Remember to codify lessons learned in the `notes` and update `topics` as needed."
+            ),
+            state=knapsack,  # type: ignore
+            tools=[
+                knapsack.research_a_topic,
+                *knapsack.scripting_tools,
+                *knapsack.docker_tools,
+            ],
+        ) as app
+    ):
+        try:
+            subprocess.run("prefect server start --background".split())
+            app.chat(initial_message="write and run a basic flow")
+        finally:
+            subprocess.run("prefect server stop".split())
