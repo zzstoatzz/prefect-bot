@@ -1,3 +1,5 @@
+"""not sure what to do with this yet, but it renders a tree of modules and their functions and classes"""
+
 import importlib
 import inspect
 import pkgutil
@@ -55,9 +57,9 @@ def get_module_tree(package_name: str) -> dict[str, dict[str, Any]]:
             }
 
             if ispkg:
-                subpackage_path = f"{package_path}/{module_name}"
-                subpackage_tree = walk_package(subpackage_path, full_name)
-                module_tree.update(subpackage_tree)
+                module_tree.update(
+                    walk_package(f"{package_path}/{module_name}", full_name)
+                )
         return module_tree
 
     return walk_package(package_path, package_name)

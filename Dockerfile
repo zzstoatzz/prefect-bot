@@ -1,10 +1,12 @@
-FROM prefecthq/prefect:3.0.0rc1-python3.12
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 WORKDIR /app
 
-RUN pip install uv
-RUN uv venv
+ENV UV_SYSTEM_PYTHON=1
+ENV PATH="/root/.local/bin:$PATH"
 
 COPY requirements.txt .
 
 RUN uv pip install -r requirements.txt
+
+COPY main.py .

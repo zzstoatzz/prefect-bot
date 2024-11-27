@@ -1,5 +1,3 @@
 marvin
-prefect@git+https://github.com/prefecthq/prefect.git
-raggy
-requests<2.32.0 # TODO remove when prefect is updated
-turbopuffer
+prefect
+raggy[tpuf]
